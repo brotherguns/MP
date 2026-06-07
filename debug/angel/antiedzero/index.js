@@ -5,11 +5,11 @@ function getModules$1() {
   MessageStore$1 ?? (MessageStore$1 = metro.findByProps("getMessage", "getMessages"));
 }
 function getMessage(channelId, messageId) {
-  const fromStore = MessageStore$1?.getMessage?.(channelId, messageId);
-  if (fromStore)
-    return fromStore;
   const chan = ChannelMessages$1?._channelMessages?.[channelId];
-  return chan?._map?.[messageId] ?? null;
+  const fromMap = chan?._map?.[messageId];
+  if (fromMap)
+    return fromMap;
+  return MessageStore$1?.getMessage?.(channelId, messageId) ?? null;
 }
 function dispatchFresh(event) {
   queueMicrotask(function() {
