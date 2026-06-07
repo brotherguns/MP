@@ -4,6 +4,13 @@ function getModules$1() {
   ChannelMessages$1 ?? (ChannelMessages$1 = metro.findByProps("_channelMessages"));
   MessageStore$1 ?? (MessageStore$1 = metro.findByProps("getMessage", "getMessages"));
 }
+function getMessage(channelId, messageId) {
+  const fromStore = MessageStore$1?.getMessage?.(channelId, messageId);
+  if (fromStore)
+    return fromStore;
+  const chan = ChannelMessages$1?._channelMessages?.[channelId];
+  return chan?._map?.[messageId] ?? null;
+}
 function dispatchFresh(event) {
   queueMicrotask(function() {
     common.FluxDispatcher.dispatch({
@@ -24,27 +31,28 @@ function fluxDispatchPatch(deletedMessageArray) {
       if (ev.type === "MESSAGE_DELETE") {
         if (ev.otherPluginBypass)
           return;
-        const orig = ChannelMessages$1?.get(ev.channelId)?.get(ev.id);
+        const channelId = ev.channelId;
+        const messageId = ev.id;
+        const orig = getMessage(channelId, messageId);
         if (!orig?.author?.id || !orig.author.username)
           return;
         if (orig.author.bot || orig.flags & 64)
           return;
         if (!orig.content && !orig.attachments?.length && !orig.embeds?.length)
           return;
-        const entry = deletedMessageArray.get(ev.id);
+        const entry = deletedMessageArray.get(messageId);
         if (entry?.stage === 2) {
           if (deletedMessageArray.size >= 100)
             deletedMessageArray.clear();
-          deletedMessageArray.delete(ev.id);
+          deletedMessageArray.delete(messageId);
           return;
         }
         if (entry?.stage === 1) {
           entry.stage = 2;
           return;
         }
-        const channelId = orig.channel_id || ev.channelId;
-        const guildId = ChannelStore$1?.getChannel(channelId)?.guild_id;
-        deletedMessageArray.set(ev.id, {
+        const guildId = ChannelStore$1?.getChannel?.(channelId)?.guild_id;
+        deletedMessageArray.set(messageId, {
           stage: 1
         });
         dispatchFresh({
@@ -58,7 +66,7 @@ function fluxDispatchPatch(deletedMessageArray) {
             content: orig.content,
             channel_id: channelId,
             guild_id: guildId,
-            message_reference: orig?.message_reference || orig?.messageReference || null,
+            message_reference: orig.message_reference || orig.messageReference || null,
             flags: 64
           }
         });
@@ -75,22 +83,25 @@ function fluxDispatchPatch(deletedMessageArray) {
           return;
         const chId = msg.channel_id || ev.channelId;
         const id = msg.id || ev.id;
-        const orig = MessageStore$1?.getMessage(chId, id) || ChannelMessages$1?.get(chId)?.get(id);
+        const orig = getMessage(chId, id);
         if (!orig?.author?.id || !orig.author.username)
           return;
         if (!orig.content && !orig.attachments?.length && !orig.embeds?.length)
           return;
         if (!msg.content || msg.content === orig.content)
           return;
-        const prefix = "`[ EDITED ]`\n\n";
+        if (orig.content?.includes("`[ EDITED ]`"))
+          return;
         dispatchFresh({
           ...ev,
           message: {
             ...msg,
-            content: `${orig.content} ${prefix}${msg.content}`,
-            guild_id: ChannelStore$1?.getChannel(chId)?.guild_id ?? msg.guild_id,
+            content: `${orig.content} \`[ EDITED ]\`
+
+${msg.content}`,
+            guild_id: ChannelStore$1?.getChannel?.(chId)?.guild_id ?? msg.guild_id,
             edited_timestamp: "invalid_timestamp",
-            message_reference: msg?.message_reference || orig?.messageReference || null
+            message_reference: msg.message_reference || orig.messageReference || null
           }
         });
         args[0] = {
