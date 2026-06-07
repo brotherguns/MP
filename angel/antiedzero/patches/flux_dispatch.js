@@ -12,13 +12,21 @@ function getModules() {
 	MessageStore    ??= findByProps("getMessage", "getMessages");
 }
 
-// Dispatch a fresh event and cancel the original by returning a no-op args array.
-// This avoids mutating the live event object in place, which causes Discord's
-// JSI bridge (native<->JS serialization layer) to blow up with a
-// "Exception in native call from JS" / decodeSerializableValue crash.
+// _channelMessages is a plain object: { [channelId]: ChannelMessages }
+// ChannelMessages._map is a plain object: { [messageId]: message }
+// ChannelMessages._array is the array of message objects
+// DO NOT call .get() on either — they are not Maps.
+function getMessage(channelId, messageId) {
+	// MessageStore.getMessage is the safest path
+	const fromStore = MessageStore?.getMessage?.(channelId, messageId);
+	if (fromStore) return fromStore;
+
+	// Fallback: dig into _channelMessages._map directly
+	const chan = ChannelMessages?._channelMessages?.[channelId];
+	return chan?._map?.[messageId] ?? null;
+}
+
 function dispatchFresh(event) {
-	// Use queueMicrotask so we're fully outside the current dispatch call
-	// before firing the new one — prevents re-entrancy issues.
 	queueMicrotask(() => {
 		FluxDispatcher.dispatch({ ...event, otherPluginBypass: true });
 	});
@@ -39,56 +47,55 @@ export default deletedMessageArray => before("dispatch", FluxDispatcher, args =>
 		if (ev.type === "MESSAGE_DELETE") {
 			if (ev.otherPluginBypass) return;
 
-			const orig = ChannelMessages?.get(ev.channelId)?.get(ev.id);
+			const channelId = ev.channelId;
+			const messageId = ev.id;
+
+			const orig = getMessage(channelId, messageId);
 			if (!orig?.author?.id || !orig.author.username) return;
 
-			// Drop bot messages and ephemeral messages (flags & 64)
+			// Drop bots and ephemeral messages
 			if (orig.author.bot || (orig.flags & 64)) return;
 
 			// Drop empty messages
 			if (!orig.content && !orig.attachments?.length && !orig.embeds?.length) return;
 
-			const entry = deletedMessageArray.get(ev.id);
+			const entry = deletedMessageArray.get(messageId);
 
-			// Stage 2 — our ghost MESSAGE_UPDATE already went through, let real delete pass
+			// Stage 2 — ghost already shown, let real delete through
 			if (entry?.stage === 2) {
 				if (deletedMessageArray.size >= 100) deletedMessageArray.clear();
-				deletedMessageArray.delete(ev.id);
-				return; // let Discord remove it normally
+				deletedMessageArray.delete(messageId);
+				return;
 			}
 
-			// Stage 1 — this is the real delete arriving after our ghost; let it through
+			// Stage 1 — real delete arriving after our ghost dispatch
 			if (entry?.stage === 1) {
 				entry.stage = 2;
 				return;
 			}
 
-			// Stage 0 — intercept: cancel original delete, fire a ghost MESSAGE_UPDATE instead
-			const channelId = orig.channel_id || ev.channelId;
-			const guildId   = ChannelStore?.getChannel(channelId)?.guild_id;
+			// Stage 0 — first delete: cancel it, fire a ghost MESSAGE_UPDATE
+			const guildId = ChannelStore?.getChannel?.(channelId)?.guild_id;
 
-			deletedMessageArray.set(ev.id, { stage: 1 });
+			deletedMessageArray.set(messageId, { stage: 1 });
 
-			// FIX: dispatch a completely fresh object instead of mutating ev in place.
-			// Mutating ev while Discord's bridge is mid-serialization = native crash.
 			dispatchFresh({
-				type:                "MESSAGE_UPDATE",
+				type:               "MESSAGE_UPDATE",
 				channelId,
-				optimistic:          false,
-				sendMessageOptions:  {},
-				isPushNotification:  false,
+				optimistic:         false,
+				sendMessageOptions: {},
+				isPushNotification: false,
 				message: {
 					...orig,
 					content:           orig.content,
 					channel_id:        channelId,
 					guild_id:          guildId,
-					message_reference: orig?.message_reference || orig?.messageReference || null,
+					message_reference: orig.message_reference || orig.messageReference || null,
 					flags:             64,
 				},
 			});
 
-			// Cancel the original MESSAGE_DELETE by zeroing args[0]
-			// so Flux sees a no-op event type it doesn't handle.
+			// Cancel original delete
 			args[0] = { type: "__ANTIED_CANCELLED__" };
 			return;
 		}
@@ -105,31 +112,27 @@ export default deletedMessageArray => before("dispatch", FluxDispatcher, args =>
 			const chId = msg.channel_id || ev.channelId;
 			const id   = msg.id || ev.id;
 
-			const orig =
-				MessageStore?.getMessage(chId, id) ||
-				ChannelMessages?.get(chId)?.get(id);
-
+			const orig = getMessage(chId, id);
 			if (!orig?.author?.id || !orig.author.username) return;
 			if (!orig.content && !orig.attachments?.length && !orig.embeds?.length) return;
 
-			// No actual content change — nothing to annotate
+			// No actual content change
 			if (!msg.content || msg.content === orig.content) return;
 
-			const prefix = "`[ EDITED ]`\n\n";
+			// Already has our marker — don't double-annotate
+			if (orig.content?.includes("`[ EDITED ]`")) return;
 
-			// FIX: dispatch a fresh event rather than mutating ev.message in place
 			dispatchFresh({
 				...ev,
 				message: {
 					...msg,
-					content:           `${orig.content} ${prefix}${msg.content}`,
-					guild_id:          ChannelStore?.getChannel(chId)?.guild_id ?? msg.guild_id,
+					content:           `${orig.content} \`[ EDITED ]\`\n\n${msg.content}`,
+					guild_id:          ChannelStore?.getChannel?.(chId)?.guild_id ?? msg.guild_id,
 					edited_timestamp:  "invalid_timestamp",
-					message_reference: msg?.message_reference || orig?.messageReference || null,
+					message_reference: msg.message_reference || orig.messageReference || null,
 				},
 			});
 
-			// Cancel the original so we don't get a double render
 			args[0] = { type: "__ANTIED_CANCELLED__" };
 		}
 
