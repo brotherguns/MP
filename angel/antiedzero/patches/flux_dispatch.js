@@ -17,13 +17,14 @@ function getModules() {
 // ChannelMessages._array is the array of message objects
 // DO NOT call .get() on either — they are not Maps.
 function getMessage(channelId, messageId) {
-	// MessageStore.getMessage is the safest path
-	const fromStore = MessageStore?.getMessage?.(channelId, messageId);
-	if (fromStore) return fromStore;
-
-	// Fallback: dig into _channelMessages._map directly
+	// Primary: _map bracket access — confirmed working via eval
+	// MessageStore.getMessage exists but returns undefined in practice on this build
 	const chan = ChannelMessages?._channelMessages?.[channelId];
-	return chan?._map?.[messageId] ?? null;
+	const fromMap = chan?._map?.[messageId];
+	if (fromMap) return fromMap;
+
+	// Fallback: MessageStore in case it works in other contexts
+	return MessageStore?.getMessage?.(channelId, messageId) ?? null;
 }
 
 function dispatchFresh(event) {
