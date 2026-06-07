@@ -1,175 +1,223 @@
-(function(exports,patcher,metro,toasts,common,assets,utils,storage,plugin,components){'use strict';const ChannelStore$1 = metro.findByProps("getChannel", "getDMFromUserId");
-const ChannelMessages$1 = metro.findByProps("_channelMessages");
-const MessageStore$1 = metro.findByProps("getMessage", "getMessages");
+(function(exports,patcher,metro,toasts,common,assets,utils,storage,plugin,components){'use strict';let ChannelStore$1, ChannelMessages$1, MessageStore$1;
+function getModules$1() {
+  ChannelStore$1 ?? (ChannelStore$1 = metro.findByProps("getChannel", "getDMFromUserId"));
+  ChannelMessages$1 ?? (ChannelMessages$1 = metro.findByProps("_channelMessages"));
+  MessageStore$1 ?? (MessageStore$1 = metro.findByProps("getMessage", "getMessages"));
+}
+function dispatchFresh(event) {
+  queueMicrotask(function() {
+    common.FluxDispatcher.dispatch({
+      ...event,
+      otherPluginBypass: true
+    });
+  });
+}
 function fluxDispatchPatch(deletedMessageArray) {
   return patcher.before("dispatch", common.FluxDispatcher, function(args) {
-    if (exports.isEnabled) {
-      try {
-        const ev = args[0];
-        if (!ev || !ev.type)
+    if (!exports.isEnabled)
+      return;
+    try {
+      const ev = args[0];
+      if (!ev?.type)
+        return;
+      getModules$1();
+      if (ev.type === "MESSAGE_DELETE") {
+        if (ev.otherPluginBypass)
           return;
-        if (ev.type === "MESSAGE_DELETE") {
-          if (ev.otherPluginBypass)
-            return;
-          const orig = ChannelMessages$1.get(ev.channelId)?.get(ev.id);
-          if (!orig?.author?.id || !orig.author.username)
-            return;
-          if (orig?.author?.bot && orig?.flags == 64 || orig.author.bot)
-            return;
-          if (!orig.content && !orig.attachments?.length && !orig.embeds?.length)
-            return;
-          const entry = deletedMessageArray.get(ev.id);
-          if (entry?.stage === 2) {
-            if (deletedMessageArray.size >= 100) {
-              deletedMessageArray = /* @__PURE__ */ new Map();
-            }
-            return;
-          }
-          if (entry?.stage === 1) {
-            entry.stage = 2;
-            return entry.message || args;
-          }
-          const guildId = ChannelStore$1.getChannel(orig.channel_id || ev.channelId)?.guild_id;
-          ev.message = {
+        const orig = ChannelMessages$1?.get(ev.channelId)?.get(ev.id);
+        if (!orig?.author?.id || !orig.author.username)
+          return;
+        if (orig.author.bot || orig.flags & 64)
+          return;
+        if (!orig.content && !orig.attachments?.length && !orig.embeds?.length)
+          return;
+        const entry = deletedMessageArray.get(ev.id);
+        if (entry?.stage === 2) {
+          if (deletedMessageArray.size >= 100)
+            deletedMessageArray.clear();
+          deletedMessageArray.delete(ev.id);
+          return;
+        }
+        if (entry?.stage === 1) {
+          entry.stage = 2;
+          return;
+        }
+        const channelId = orig.channel_id || ev.channelId;
+        const guildId = ChannelStore$1?.getChannel(channelId)?.guild_id;
+        deletedMessageArray.set(ev.id, {
+          stage: 1
+        });
+        dispatchFresh({
+          type: "MESSAGE_UPDATE",
+          channelId,
+          optimistic: false,
+          sendMessageOptions: {},
+          isPushNotification: false,
+          message: {
             ...orig,
             content: orig.content,
-            channel_id: orig.channel_id || ev.channelId,
+            channel_id: channelId,
             guild_id: guildId,
             message_reference: orig?.message_reference || orig?.messageReference || null,
             flags: 64
-          };
-          ev.type = "MESSAGE_UPDATE";
-          ev.channelId = orig.channel_id || ev.channelId;
-          ev.optimistic = false;
-          ev.sendMessageOptions = {};
-          ev.isPushNotification = false;
-          deletedMessageArray.set(ev.id, {
-            message: args,
-            stage: 1
-          });
-          return args;
-        }
-        if (ev.type === "MESSAGE_UPDATE") {
-          if (ev.otherPluginBypass)
-            return;
-          const msg = ev.message;
-          if (!msg || msg.author?.bot)
-            return;
-          const chId = msg.channel_id || ev.channelId;
-          const id = msg.id || ev.id;
-          const orig = MessageStore$1.getMessage(chId, id) || ChannelMessages$1.get(chId)?.get(id);
-          if (!orig?.author?.id || !orig.author.username)
-            return;
-          if (!orig.content && !orig.attachments?.length && !orig.embeds?.length)
-            return;
-          if (!msg.content || msg.content === orig.content)
-            return;
-          let prefix = "`[ EDITED ]`\n\n";
-          ev.message = {
+          }
+        });
+        args[0] = {
+          type: "__ANTIED_CANCELLED__"
+        };
+        return;
+      }
+      if (ev.type === "MESSAGE_UPDATE") {
+        if (ev.otherPluginBypass)
+          return;
+        const msg = ev.message;
+        if (!msg || msg.author?.bot)
+          return;
+        const chId = msg.channel_id || ev.channelId;
+        const id = msg.id || ev.id;
+        const orig = MessageStore$1?.getMessage(chId, id) || ChannelMessages$1?.get(chId)?.get(id);
+        if (!orig?.author?.id || !orig.author.username)
+          return;
+        if (!orig.content && !orig.attachments?.length && !orig.embeds?.length)
+          return;
+        if (!msg.content || msg.content === orig.content)
+          return;
+        const prefix = "`[ EDITED ]`\n\n";
+        dispatchFresh({
+          ...ev,
+          message: {
             ...msg,
             content: `${orig.content} ${prefix}${msg.content}`,
-            guild_id: ChannelStore$1.getChannel(chId)?.guild_id ?? msg.guild_id,
+            guild_id: ChannelStore$1?.getChannel(chId)?.guild_id ?? msg.guild_id,
             edited_timestamp: "invalid_timestamp",
             message_reference: msg?.message_reference || orig?.messageReference || null
-          };
-          return args;
-        }
-      } catch (e) {
-        toasts.showToast("[ANTIED Zero] FluxDispatcher crash \u2013 check logs");
-        console.error("[ANTIED Zero] Flux patch\n", e);
+          }
+        });
+        args[0] = {
+          type: "__ANTIED_CANCELLED__"
+        };
       }
+    } catch (e) {
+      toasts.showToast("[ANTIED Zero] FluxDispatcher crash \u2013 check logs");
+      console.error("[ANTIED Zero] Flux patch\n", e);
     }
   });
-}const Message = metro.findByProps("sendMessage", "startEditMessage");
+}let Message;
+function getModule() {
+  Message ?? (Message = metro.findByProps("sendMessage", "startEditMessage"));
+}
 function selfEditPatch() {
+  getModule();
+  if (!Message) {
+    console.warn("[ANTIED Zero] self_edit: could not find Message module, patch skipped");
+    return function() {
+    };
+  }
   return patcher.before("startEditMessage", Message, function(args) {
     if (!exports.isEnabled)
       return;
-    const DAN = regexEscaper("`[ EDITED ]`\n\n");
-    const regexPattern = new RegExp(DAN, "gmi");
-    const [, , msg] = args;
-    const lats = msg.split(regexPattern);
-    const f = lats[lats.length - 1];
-    args[2] = f;
+    const msg = args[2];
+    if (typeof msg !== "string")
+      return;
+    const separator = new RegExp(regexEscaper("`[ EDITED ]`\n\n"), "gmi");
+    const parts = msg.split(separator);
+    args[2] = parts[parts.length - 1].trimStart();
   });
-}const ActionSheet = metro.findByProps("openLazy", "hideActionSheet");
-const MessageStore = metro.findByProps("getMessage", "getMessages");
-const ChannelStore = metro.findByProps("getChannel", "getDMFromUserId");
-const ChannelMessages = metro.findByProps("_channelMessages");
-const { ActionSheetRow } = metro.findByProps("ActionSheetRow");
-function someFunc(a) {
-  return a?.props?.label?.toLowerCase?.() == "reply";
+}let ActionSheet, MessageStore, ChannelStore, ChannelMessages, _ActionSheetRow;
+function getModules() {
+  ActionSheet ?? (ActionSheet = metro.findByProps("openLazy", "hideActionSheet"));
+  MessageStore ?? (MessageStore = metro.findByProps("getMessage", "getMessages"));
+  ChannelStore ?? (ChannelStore = metro.findByProps("getChannel", "getDMFromUserId"));
+  ChannelMessages ?? (ChannelMessages = metro.findByProps("_channelMessages"));
+  _ActionSheetRow ?? (_ActionSheetRow = metro.findByProps("ActionSheetRow")?.ActionSheetRow);
 }
+const isReplyButton = function(a) {
+  return a?.props?.label?.toLowerCase?.() === "reply";
+};
+const separator = function() {
+  return new RegExp(regexEscaper("`[ EDITED ]`\n\n"), "gmi");
+};
 function actionsheet() {
-  return patcher.before("openLazy", ActionSheet, function([component, args, actionMessage]) {
-    if (exports.isEnabled) {
-      try {
-        const message = actionMessage?.message;
-        if (args !== "MessageLongPressActionSheet" || !message)
-          return;
-        component.then(function(instance) {
-          const unpatch = patcher.after("default", instance, function(_, comp) {
-            try {
-              common.React.useEffect(function() {
-                return function() {
-                  unpatch();
-                };
-              }, []);
-              const buttons = utils.findInReactTree(comp, function(c) {
-                return c?.find?.(someFunc);
-              });
-              if (!buttons)
-                return comp;
-              const position = Math.max(buttons.findIndex(someFunc), buttons.length - 1);
-              let originalMessage = null;
-              if (message?.channel_id && message?.id) {
-                originalMessage = MessageStore.getMessage(message?.channel_id, message?.id);
-                if (!originalMessage) {
-                  const channel = ChannelMessages.get(message?.channel_id);
-                  originalMessage = channel?.get(message?.id);
+  getModules();
+  if (!ActionSheet) {
+    console.warn("[ANTIED Zero] actionsheet: could not find ActionSheet module, patch skipped");
+    return function() {
+    };
+  }
+  return patcher.before("openLazy", ActionSheet, function([component, key, actionMessage]) {
+    if (!exports.isEnabled)
+      return;
+    try {
+      const message = actionMessage?.message;
+      if (key !== "MessageLongPressActionSheet" || !message)
+        return;
+      component.then(function(instance) {
+        const unpatch = patcher.after("default", instance, function(_, comp) {
+          try {
+            common.React.useEffect(function() {
+              return function() {
+                return unpatch();
+              };
+            }, []);
+            getModules();
+            const ActionSheetRow = _ActionSheetRow;
+            if (!ActionSheetRow)
+              return comp;
+            const buttons = utils.findInReactTree(comp, function(c) {
+              return c?.find?.(isReplyButton);
+            });
+            if (!buttons)
+              return comp;
+            const replyIdx = buttons.findIndex(isReplyButton);
+            const insertAt = replyIdx >= 0 ? replyIdx + 1 : buttons.length;
+            let originalMessage = MessageStore?.getMessage(message.channel_id, message.id) || ChannelMessages?.get(message.channel_id)?.get(message.id);
+            if (!originalMessage)
+              return comp;
+            const hasBuffer = separator().test(message.content ?? "");
+            if (!hasBuffer)
+              return comp;
+            buttons.splice(insertAt, 0, /* @__PURE__ */ common.React.createElement(ActionSheetRow, {
+              label: "Remove Edit History",
+              subLabel: "Added by Antied Zero",
+              icon: /* @__PURE__ */ common.React.createElement(ActionSheetRow.Icon, {
+                source: assets.getAssetIDByName("ic_edit_24px")
+              }),
+              onPress: function() {
+                try {
+                  const parts = (message?.content ?? "").split(separator());
+                  const latest = parts[parts.length - 1].trimStart();
+                  const guildId = ChannelStore?.getChannel(originalMessage.channel_id)?.guild_id ?? message.guild_id;
+                  if (!guildId) {
+                    toasts.showToast("[ANTIED Zero] Could not resolve guild_id");
+                    return;
+                  }
+                  common.FluxDispatcher.dispatch({
+                    type: "MESSAGE_UPDATE",
+                    message: {
+                      ...message,
+                      content: latest,
+                      guild_id: guildId,
+                      message_reference: message?.message_reference || message?.messageReference || null
+                    },
+                    otherPluginBypass: true
+                  });
+                  ActionSheet.hideActionSheet();
+                  toasts.showToast("Edit history removed", assets.getAssetIDByName("ic_edit_24px"));
+                } catch (e) {
+                  console.error("[ANTIED Zero] Remove Edit History onPress\n", e);
+                  toasts.showToast("[ANTIED Zero] Failed to remove history");
                 }
               }
-              if (!originalMessage)
-                return comp;
-              const escapedBuffer = regexEscaper("`[ EDITED ]`\n\n");
-              const separator = new RegExp(escapedBuffer, "gmi");
-              const checkIfBufferExist = separator.test(message.content);
-              if (checkIfBufferExist) {
-                const targetPos = position || 1;
-                buttons.splice(targetPos, 0, /* @__PURE__ */ common.React.createElement(ActionSheetRow, {
-                  label: "Remove Edit History",
-                  subLabel: `Added by Antied Zero`,
-                  icon: /* @__PURE__ */ common.React.createElement(ActionSheetRow.Icon, {
-                    source: assets.getAssetIDByName("ic_edit_24px")
-                  }),
-                  onPress: function() {
-                    const lats = message?.content?.split(separator);
-                    const targetMessage = lats[lats.length - 1];
-                    common.FluxDispatcher.dispatch({
-                      type: "MESSAGE_UPDATE",
-                      message: {
-                        ...message,
-                        message_reference: message?.message_reference || message?.messageReference || null,
-                        content: `${targetMessage}`,
-                        guild_id: ChannelStore.getChannel(originalMessage.channel_id).guild_id
-                      },
-                      otherPluginBypass: true
-                    });
-                    ActionSheet.hideActionSheet();
-                    toasts.showToast("History Removed", assets.getAssetIDByName("ic_edit_24px"));
-                  }
-                }));
-              }
-            } catch (e) {
-              toasts.showToast("[ANTIED Zero] Crash on ActionSheet, check debug log for more info");
-              console.error("[ANTIED Zero] Error > ActionSheet:Component Patch\n", e);
-            }
-          });
+            }));
+          } catch (e) {
+            toasts.showToast("[ANTIED Zero] Crash on ActionSheet component, check debug log");
+            console.error("[ANTIED Zero] ActionSheet:Component Patch\n", e);
+          }
         });
-      } catch (e) {
-        toasts.showToast("[ANTIED Zero] Crash on ActionSheet, check debug log for more info");
-        console.error("[ANTIED Zero] Error > ActionSheet Patch\n", e);
-      }
+      });
+    } catch (e) {
+      toasts.showToast("[ANTIED Zero] Crash on ActionSheet, check debug log");
+      console.error("[ANTIED Zero] ActionSheet Patch\n", e);
     }
   });
 }const UserStore = metro.findByStoreName("UserStore");
