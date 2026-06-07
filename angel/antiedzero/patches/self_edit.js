@@ -1,19 +1,33 @@
 import { before } from "@vendetta/patcher";
-import { findByProps } from '@vendetta/metro';
+import { findByProps } from "@vendetta/metro";
 import { regexEscaper, isEnabled } from "..";
 
-const Message = findByProps("sendMessage", "startEditMessage")
+// Deferred so the module registry is ready when this is first called,
+// not at import time (which happens before onLoad).
+let Message;
+function getModule() {
+	Message ??= findByProps("sendMessage", "startEditMessage");
+}
 
-export default () => before('startEditMessage', Message, (args) => {
-	if(!isEnabled) return;
+export default () => {
+	getModule();
 
-	const DAN = regexEscaper("`[ EDITED ]`\n\n")
+	if (!Message) {
+		console.warn("[ANTIED Zero] self_edit: could not find Message module, patch skipped");
+		return () => {};
+	}
 
-	const regexPattern = new RegExp(DAN, 'gmi');
+	return before("startEditMessage", Message, args => {
+		if (!isEnabled) return;
 
-	const [, , msg] = args;
-	const lats = msg.split(regexPattern);
-	const f = lats[lats.length - 1];
+		// args: [channelId, messageId, content]
+		const msg = args[2];
+		if (typeof msg !== "string") return;
 
-	args[2] = f;
-});
+		const separator = new RegExp(regexEscaper("`[ EDITED ]`\n\n"), "gmi");
+		const parts = msg.split(separator);
+
+		// Keep only the last (most recent) content after all EDITED markers
+		args[2] = parts[parts.length - 1].trimStart();
+	});
+};
